@@ -96,6 +96,8 @@ class PI0Pytorch(nn.Module):
             use_adarms=[False, True] if self.pi05 else [False, False],
             precision=config.dtype,
         )
+        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+        self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
 
         self.action_in_proj = nn.Linear(config.action_dim, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, config.action_dim)
@@ -389,8 +391,6 @@ class PI0Pytorch(nn.Module):
 
         # Compute image and language key value cache
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
-        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-
         _, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
@@ -399,12 +399,12 @@ class PI0Pytorch(nn.Module):
             use_cache=True,
         )
 
-        dt = -1.0 / num_steps
-        dt = torch.tensor(dt, dtype=torch.float32, device=device)
+        dt_value = -1.0 / num_steps
+        dt = torch.tensor(dt_value, dtype=torch.float32, device=device)
 
         x_t = noise
-        time = torch.tensor(1.0, dtype=torch.float32, device=device)
-        while time >= -dt / 2:
+        for step in range(num_steps):
+            time = torch.tensor(1.0 + float(step) * dt_value, dtype=torch.float32, device=device)
             expanded_time = time.expand(bsize)
             v_t = self.denoise_step(
                 state,
@@ -416,7 +416,6 @@ class PI0Pytorch(nn.Module):
 
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t
-            time += dt
         return x_t
 
     def denoise_step(
@@ -445,8 +444,6 @@ class PI0Pytorch(nn.Module):
 
         # Prepare attention masks
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
-        self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
-
         outputs_embeds, _ = self.paligemma_with_expert.forward(
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
