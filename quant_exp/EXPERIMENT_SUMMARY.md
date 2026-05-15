@@ -6,6 +6,45 @@
 
 实验对象为 `pi05_droid`，推理使用固定 observation、固定 noise 和固定 denoise step 数，主要关注 action expert 的 MLP。除特别说明外，attention、norm、action head 和 time MLP 保持 BF16。
 
+## 模型权重规模
+
+以下统计来自本地 `pi05_droid_pytorch_bf16` checkpoint，口径为 PyTorch 参数张量大小。`actual_MiB` 按 checkpoint 中真实 dtype 计算；理论 BF16/INT8/INT4 大小只按参数个数乘以位宽估算，不包含量化 scale、zero point、packing metadata 和 runtime cache。
+
+### 大脑与小脑总量
+
+| 模块 | 说明 | 参数量 | actual MiB | BF16 MiB | INT8 MiB | INT4 MiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 大脑: PaliGemma VLM | `paligemma_with_expert.paligemma` | 2.923B | 5577.82 | 5575.82 | 2787.91 | 1393.95 |
+| 语言模型部分 | `paligemma.language_model` | 2.509B | 4784.79 | 4784.64 | 2392.32 | 1196.16 |
+| 视觉塔部分 | `paligemma.vision_tower` | 0.412B | 788.53 | 786.67 | 393.34 | 196.67 |
+| 多模态 projector | `paligemma.multi_modal_projector` | 0.002B | 4.50 | 4.50 | 2.25 | 1.13 |
+| 小脑: Gemma Expert model | `gemma_expert.model` | 0.428B | 1038.43 | 816.22 | 408.11 | 204.05 |
+| 小脑: Gemma Expert full | `gemma_expert`，含 unused LM head | 0.691B | 1540.68 | 1318.47 | 659.23 | 329.62 |
+
+当前推理 forward 实际使用的是 `gemma_expert.model`，不是完整 `GemmaForCausalLM` 的 `lm_head`。因此“小脑”用于量化收益估算时应优先看 `gemma_expert.model` 的 0.428B 参数，而不是含 unused LM head 的 0.691B。
+
+### 小脑内部拆分
+
+| Expert 子模块 | 参数量 | BF16 MiB | INT8 MiB | INT4 MiB |
+| --- | ---: | ---: | ---: | ---: |
+| MLP | 226.49M | 432.00 | 216.00 | 108.00 |
+| Attention | 84.93M | 162.00 | 81.00 | 40.50 |
+| Norm / AdaRMS | 113.36M | 216.21 | 108.11 | 54.05 |
+| Other | 3.15M | 6.01 | 3.00 | 1.50 |
+
+本次实验只量化 `expert_mlp`，所以理论上最多直接影响约 432 MiB 的 BF16 权重。W8 weight-only 将这部分权重降到约 216 MiB，与实测 inference peak allocated 约 215 MiB 的下降量基本吻合。
+
+### Action adapter 参数量
+
+| 模块 | 参数量 | actual MiB |
+| --- | ---: | ---: |
+| `action_in_proj` | 33.79K | 0.13 |
+| `time_mlp_in` | 1.05M | 4.00 |
+| `time_mlp_out` | 1.05M | 4.00 |
+| `action_out_proj` | 32.80K | 0.13 |
+
+Action adapter 总量约 2.17M 参数，相比 VLM 和 Gemma Expert 很小，不是当前显存优化的主要目标。
+
 ## 已完成的工程改动
 
 - 新增 `quant_exp/run_acceleration.py`，用于本地 checkpoint 的 BF16 baseline 与量化版本测速。
